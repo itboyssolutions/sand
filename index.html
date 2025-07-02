@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Create AWS Sandbox User</title>
+  <style>
+    body {
+      background-color: #f4f0fb;
+      color: #333;
+      font-family: "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px;
+    }
+
+    h1 {
+      color: #5e2ca5;
+      margin-bottom: 20px;
+    }
+
+    button {
+      background-color: #5e2ca5;
+      color: white;
+      padding: 12px 24px;
+      font-size: 16px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    button:hover {
+      background-color: #4a208c;
+    }
+
+    .output {
+      margin-top: 30px;
+      background-color: white;
+      border-radius: 10px;
+      padding: 20px;
+      width: 90%;
+      max-width: 650px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+      white-space: pre-wrap;
+      font-family: monospace;
+      word-break: break-word;
+    }
+
+    a {
+      color: #5e2ca5;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <h1>Create AWS Sandbox User</h1>
+  <button onclick="createSandbox()">🚀 Launch Sandbox</button>
+
+  <div id="output" class="output">
+    Click the button above to create a temporary AWS sandbox user for Kubernetes.
+  </div>
+
+  <script>
+    async function createSandbox() {
+      const output = document.getElementById("output");
+      output.textContent = "⏳ Creating sandbox user...";
+      try {
+        const response = await fetch("https://uytxrxjznj.execute-api.eu-west-1.amazonaws.com/sandbox"); // Replace this with your actual URL
+        const parsed = await response.json();
+
+        output.innerHTML = `
+          <strong>👤 Username:</strong> ${parsed.username}<br>
+          <strong>🔐 Console Password:</strong> ${parsed.console_password}<br>
+          <span style="white-space: nowrap;">🌐 <strong>Console Login:</strong> <a href="https://agile-techpractices.signin.aws.amazon.com/console?region=eu-west-1">https://agile-techpractices.signin.aws.amazon.com/console?region=eu-west-1</a></span><br>
+          <strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}<br>
+          <strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}<br>
+          <strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes<br>
+          <strong style="background:#f3e8ff; border:1px solid #9c27b0; padding:6px 10px; border-radius:6px; color:#4a148c; font-family:monospace;">🏷️ Note: You must add below Tag to each resource you create in AWS. </strong> 
+          <span style="color:#000000; font-weight:bold; font-family:'Courier New', monospace;">
+            ${parsed.tag_instruction || `Key=Username,Value=${parsed.username}`}
+          </span>
+        `;
+      } catch (err) {
+        output.textContent = "❌ Failed to create sandbox user: " + err;
+      }
+    }
+  </script>
+</body>
+</html>
