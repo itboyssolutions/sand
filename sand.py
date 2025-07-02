@@ -1,260 +1,236 @@
 import boto3
 import json
-import logging
-import time
+import os
 from datetime import datetime, timezone
-from botocore.config import Config
-import botocore
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+# AWS clients
+s3 = boto3.client('s3')
+iam = boto3.client('iam')
+ec2 = boto3.client('ec2')
+lambda_client = boto3.client('lambda')
+eks = boto3.client('eks')
+ecs = boto3.client('ecs')
+cf = boto3.client('cloudformation')
+dynamodb = boto3.client('dynamodb')
+rds = boto3.client('rds')
+ecr = boto3.client('ecr')
+elbv2 = boto3.client('elbv2')
 
-# Configure AWS clients with 3 retries
-cfg = Config(retries={'max_attempts': 3, 'mode': 'standard'})
-s3 = boto3.client('s3', config=cfg)
-ec2 = boto3.client('ec2', config=cfg)
-iam = boto3.client('iam', config=cfg)
-rds = boto3.client('rds', config=cfg)
-eks = boto3.client('eks', config=cfg)
-ecr = boto3.client('ecr', config=cfg)
-elbv2 = boto3.client('elbv2', config=cfg)
-dynamodb = boto3.client('dynamodb', config=cfg)
-ecs = boto3.client('ecs', config=cfg)
-cf = boto3.client('cloudformation', config=cfg)
-
-BUCKET = "aws-sandbox-tracker-659840170574-eu-west-1"
-PREFIX = "sessions/"
-
-def retry(func, *args, **kwargs):
-    for attempt in range(3):
-        try:
-            return func(*args, **kwargs)
-        except botocore.exceptions.ClientError as e:
-            code = e.response['Error']['Code']
-            if code in ("Throttling", "TooManyRequestsException", "DependencyViolation"):
-                backoff = 2 ** attempt
-                logger.warning("Retryable error %s on %s, attempt %d/3, sleeping %ds", code, func.__name__, attempt+1, backoff)
-                time.sleep(backoff)
-                continue
-            raise
-    raise RuntimeError(f"{func.__name__} failed after 3 retries")
-
-def teardown_vpc(username, tag_filters):
-    vpcs = retry(ec2.describe_vpcs, Filters=tag_filters)['Vpcs']
-    for vpc in vpcs:
-        vid = vpc['VpcId']
-        logger.info("Tearing down VPC %s", vid)
-        # IGWs
-        for igw in retry(ec2.describe_internet_gateways, Filters=[{'Name':'attachment.vpc-id','Values':[vid]}])['InternetGateways']:
-            igwid = igw['InternetGatewayId']
-            retry(ec2.detach_internet_gateway, InternetGatewayId=igwid, VpcId=vid)
-            retry(ec2.delete_internet_gateway, InternetGatewayId=igwid)
-        # NATs
-        for nat in retry(ec2.describe_nat_gateways, Filters=tag_filters)['NatGateways']:
-            retry(ec2.delete_nat_gateway, NatGatewayId=nat['NatGatewayId'])
-        # Subnets
-        for sub in retry(ec2.describe_subnets, Filters=tag_filters)['Subnets']:
-            retry(ec2.delete_subnet, SubnetId=sub['SubnetId'])
-        # Route tables
-        for rt in retry(ec2.describe_route_tables, Filters=[{'Name':'vpc-id','Values':[vid]}])['RouteTables']:
-            for assoc in rt.get('Associations', []):
-                if not assoc.get('Main'):
-                    retry(ec2.disassociate_route_table, AssociationId=assoc['RouteTableAssociationId'])
-            retry(ec2.delete_route_table, RouteTableId=rt['RouteTableId'])
-        retry(ec2.delete_vpc, VpcId=vid)
-        logger.info("Deleted VPC %s", vid)
+# S3 metadata location
+BUCKET_NAME = "aws-sandbox-tracker-659840170574-eu-west-1"
+SESSION_FOLDER = 'sessions/'
 
 def lambda_handler(event, context):
-    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=PREFIX)
-    if 'Contents' not in resp:
-        logger.info("No sessions to process.")
+    response = s3.list_objects_v2(Bucket=BUCKET_NAME, Prefix=SESSION_FOLDER)
+    if 'Contents' not in response:
+        print("No session files found.")
         return
 
-    now = datetime.now(timezone.utc)
-    for obj in resp['Contents']:
+    for obj in response['Contents']:
         key = obj['Key']
-        if not key.endswith('.json'): continue
-
-        data = json.loads(s3.get_object(Bucket=BUCKET, Key=key)['Body'].read())
-        username = data.get('username')
-        expires = datetime.fromisoformat(data['expires_at'].replace("Z","+00:00"))
-        if now < expires:
-            logger.info("Skipping unexpired session for %s", username)
+        if not key.endswith('.json'):
             continue
-        logger.info("Cleaning up resources for user %s", username)
-        tag = {'Name':'tag:Username', 'Values':[username]}
-        tag_filters = [tag]
 
-        try:
-            teardown_vpc(username, tag_filters)
-        except Exception as e:
-            logger.error("VPC teardown error for %s: %s", username, e)
+        session_data = json.loads(s3.get_object(Bucket=BUCKET_NAME, Key=key)['Body'].read())
+        username = session_data['username']
+        expires_at = datetime.fromisoformat(session_data['expires_at'].replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
 
-        # EC2 instances
+        if now < expires_at:
+            print(f"User {username} not expired yet.")
+            continue
+
+        print(f"Cleaning up resources tagged with username: {username}")
+
+        tag_filters = [{'Name': 'tag:Username', 'Values': [username]}]
+
+        # Disable User
         try:
-            res = retry(ec2.describe_instances, Filters=tag_filters)
-            for r in res['Reservations']:
-                for inst in r['Instances']:
-                    retry(ec2.terminate_instances, InstanceIds=[inst['InstanceId']])
-                    logger.info("Terminated EC2 %s", inst['InstanceId'])
+            for key_obj in iam.list_access_keys(UserName=username)['AccessKeyMetadata']:
+                iam.delete_access_key(UserName=username, AccessKeyId=key_obj['AccessKeyId'])
+            iam.delete_login_profile(UserName=username)
         except Exception as e:
-            logger.error("EC2 termination failed for %s: %s", username, e)
+            print(f"Access disable failed for {username}: {e}")
+
+        # EC2 Instances
+        try:
+            instances = ec2.describe_instances(Filters=tag_filters)
+            for reservation in instances['Reservations']:
+                for instance in reservation['Instances']:
+                    ec2.terminate_instances(InstanceIds=[instance['InstanceId']])
+                    print(f"Terminated EC2 instance: {instance['InstanceId']}")
+        except Exception as e:
+            print(f"Failed to terminate EC2 instances: {e}")
 
         # Volumes
         try:
-            vols = retry(ec2.describe_volumes, Filters=tag_filters)['Volumes']
-            for v in vols:
-                retry(ec2.delete_volume, VolumeId=v['VolumeId'])
-                logger.info("Deleted Volume %s", v['VolumeId'])
+            volumes = ec2.describe_volumes(Filters=tag_filters)['Volumes']
+            for vol in volumes:
+                ec2.delete_volume(VolumeId=vol['VolumeId'])
+                print(f"Deleted volume: {vol['VolumeId']}")
         except Exception as e:
-            logger.error("Volume deletion failed: %s", e)
+            print(f"Failed to delete volumes: {e}")
 
-        # ELBv2
+        # S3 Buckets
         try:
-            lbs = retry(elbv2.describe_load_balancers)['LoadBalancers']
-            for lb in lbs:
-                arn = lb['LoadBalancerArn']
-                tags = retry(elbv2.describe_tags, ResourceArns=[arn])['TagDescriptions'][0]['Tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(elbv2.delete_load_balancer, LoadBalancerArn=arn)
-                    logger.info("Deleted LB %s", arn)
-        except Exception as e:
-            logger.error("Load balancer deletion failed: %s", e)
-
-        # CloudFormation
-        try:
-            stacks = retry(cf.describe_stacks)['Stacks']
-            for stk in stacks:
-                if any(t['Key']=='Username' and t['Value']==username for t in stk.get('Tags', [])):
-                    retry(cf.delete_stack, StackName=stk['StackName'])
-                    logger.info("Deleted CFN stack %s", stk['StackName'])
-        except Exception as e:
-            logger.error("CFN deletion failed: %s", e)
-
-        # S3 buckets
-        try:
-            for b in retry(s3.list_buckets)['Buckets']:
-                nm = b['Name']
+            buckets = s3.list_buckets()['Buckets']
+            for bucket in buckets:
+                name = bucket['Name']
                 try:
-                    tags = retry(s3.get_bucket_tagging, Bucket=nm)['TagSet']
-                    if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                        objs = retry(s3.list_objects_v2, Bucket=nm).get('Contents', [])
-                        for o in objs:
-                            retry(s3.delete_object, Bucket=nm, Key=o['Key'])
-                        retry(s3.delete_bucket, Bucket=nm)
-                        logger.info("Deleted bucket %s", nm)
-                except botocore.exceptions.ClientError:
-                    pass
+                    tagging = s3.get_bucket_tagging(Bucket=name)['TagSet']
+                    if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in tagging):
+                        objs = s3.list_objects_v2(Bucket=name).get('Contents', [])
+                        for obj in objs:
+                            s3.delete_object(Bucket=name, Key=obj['Key'])
+                        s3.delete_bucket(Bucket=name)
+                        print(f"Deleted bucket: {name}")
+                except Exception:
+                    continue
         except Exception as e:
-            logger.error("Bucket deletion failed: %s", e)
+            print(f"Failed to delete S3 buckets: {e}")
 
         # RDS
         try:
-            for db in retry(rds.describe_db_instances)['DBInstances']:
+            rds_instances = rds.describe_db_instances()['DBInstances']
+            for db in rds_instances:
                 arn = db['DBInstanceArn']
-                tags = retry(rds.list_tags_for_resource, ResourceName=arn)['TagList']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(rds.delete_db_instance, DBInstanceIdentifier=db['DBInstanceIdentifier'], SkipFinalSnapshot=True)
-                    logger.info("Deleted RDS %s", db['DBInstanceIdentifier'])
+                tags = rds.list_tags_for_resource(ResourceName=arn)['TagList']
+                if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in tags):
+                    rds.delete_db_instance(DBInstanceIdentifier=db['DBInstanceIdentifier'], SkipFinalSnapshot=True)
+                    print(f"Deleted RDS instance: {db['DBInstanceIdentifier']}")
         except Exception as e:
-            logger.error("RDS deletion failed: %s", e)
+            print(f"Failed to delete RDS instances: {e}")
 
-        # EKS
+        # Load Balancers
         try:
-            for cname in retry(eks.list_clusters)['clusters']:
-                tags = retry(eks.describe_cluster, name=cname)['cluster'].get('tags',{})
-                if tags.get('Username') == username:
-                    retry(eks.delete_cluster, name=cname)
-                    logger.info("Deleted EKS %s", cname)
+            lbs = elbv2.describe_load_balancers()['LoadBalancers']
+            for lb in lbs:
+                arn = lb['LoadBalancerArn']
+                tags = elbv2.describe_tags(ResourceArns=[arn])['TagDescriptions'][0]['Tags']
+                if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in tags):
+                    elbv2.delete_load_balancer(LoadBalancerArn=arn)
+                    print(f"Deleted load balancer: {arn}")
         except Exception as e:
-            logger.error("EKS deletion failed: %s", e)
+            print(f"Failed to delete load balancers: {e}")
 
         # ECR
         try:
-            for repo in retry(ecr.describe_repositories)['repositories']:
+            repos = ecr.describe_repositories()['repositories']
+            for repo in repos:
                 arn = repo['repositoryArn']
-                tags = retry(ecr.list_tags_for_resource, resourceArn=arn)['tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(ecr.delete_repository, repositoryName=repo['repositoryName'], force=True)
-                    logger.info("Deleted ECR %s", repo['repositoryName'])
+                tags = ecr.list_tags_for_resource(resourceArn=arn)['tags']
+                if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in tags):
+                    ecr.delete_repository(repositoryName=repo['repositoryName'], force=True)
+                    print(f"Deleted ECR repo: {repo['repositoryName']}")
         except Exception as e:
-            logger.error("ECR deletion failed: %s", e)
+            print(f"Failed to delete ECR repositories: {e}")
 
-        # EIPs
+        # EKS Cleanup
         try:
-            for addr in retry(ec2.describe_addresses)['Addresses']:
-                tags = retry(ec2.describe_tags, Filters=[{'Name':'resource-id','Values':[addr['AllocationId']]}])['Tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(ec2.release_address, AllocationId=addr['AllocationId'])
-                    logger.info("Released EIP %s", addr['AllocationId'])
-        except Exception as e:
-            logger.error("EIP release failed: %s", e)
+            clusters = eks.list_clusters()['clusters']
+            for cluster_name in clusters:
+                desc = eks.describe_cluster(name=cluster_name)['cluster']
+                tags = desc.get('tags', {})
+                if tags.get('Username') == username:
+                    print(f"Cleaning up EKS cluster: {cluster_name}")
 
-        # NAT Gateways (extra cleanup)
-        try:
-            for nat in retry(ec2.describe_nat_gateways)['NatGateways']:
-                if any(t['Key']=='Username' and t['Value']==username for t in nat.get('Tags',[])):
-                    retry(ec2.delete_nat_gateway, NatGatewayId=nat['NatGatewayId'])
-                    logger.info("Deleted NAT GW %s", nat['NatGatewayId'])
-        except Exception as e:
-            logger.error("NAT deletion failed: %s", e)
+                    # 1. Delete Node Groups first
+                    node_groups = eks.list_nodegroups(clusterName=cluster_name)['nodegroups']
+                    for node_group in node_groups:
+                        eks.delete_nodegroup(clusterName=cluster_name, nodegroupName=node_group)
+                        print(f"Deleted Node Group: {node_group} from cluster: {cluster_name}")
 
-        # DynamoDB tables
-        try:
-            for tab in retry(dynamodb.list_tables)['TableNames']:
-                arn = retry(dynamodb.describe_table, TableName=tab)['Table']['TableArn']
-                tags = retry(dynamodb.list_tags_of_resource, ResourceArn=arn)['Tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(dynamodb.delete_table, TableName=tab)
-                    logger.info("Deleted DynamoDB %s", tab)
-        except Exception as e:
-            logger.error("DynamoDB deletion failed: %s", e)
+                    # 2. Delete ECR repositories associated with this EKS cluster
+                    ecr_repos = ecr.describe_repositories()['repositories']
+                    for repo in ecr_repos:
+                        tags = ecr.list_tags_for_resource(resourceArn=repo['repositoryArn'])['tags']
+                        if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in tags):
+                            ecr.delete_repository(repositoryName=repo['repositoryName'], force=True)
+                            print(f"Deleted ECR repository: {repo['repositoryName']}")
 
-        # Key pairs
-        try:
-            for kp in retry(ec2.describe_key_pairs)['KeyPairs']:
-                nm = kp['KeyName']
-                tags = retry(ec2.describe_tags, Filters=[{'Name':'resource-id','Values':[nm]}])['Tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(ec2.delete_key_pair, KeyName=nm)
-                    logger.info("Deleted KeyPair %s", nm)
-        except Exception as e:
-            logger.error("KeyPair deletion failed: %s", e)
+                    # 3. Delete Load Balancers (ALB/NLB) used by the EKS services
+                    lb_arns = elbv2.describe_load_balancers()['LoadBalancers']
+                    for lb in lb_arns:
+                        arn = lb['LoadBalancerArn']
+                        lb_tags = elbv2.describe_tags(ResourceArns=[arn])['TagDescriptions'][0]['Tags']
+                        if any(tag['Key'] == 'Username' and tag['Value'] == username for tag in lb_tags):
+                            elbv2.delete_load_balancer(LoadBalancerArn=arn)
+                            print(f"Deleted Load Balancer: {arn}")
 
-        # ECS clusters
-        try:
-            for arn in retry(ecs.list_clusters)['clusterArns']:
-                tags = retry(ecs.list_tags_for_resource, resourceArn=arn)['tags']
-                if any(t['Key']=='Username' and t['Value']==username for t in tags):
-                    retry(ecs.delete_cluster, cluster=arn.split('/')[-1])
-                    logger.info("Deleted ECS %s", arn)
-        except Exception as e:
-            logger.error("ECS deletion failed: %s", e)
+                    # 4. Delete the EKS cluster itself
+                    eks.delete_cluster(name=cluster_name)
+                    print(f"Deleted EKS cluster: {cluster_name}")
 
-        # IAM cleanup
-        try:
-            for key_obj in retry(iam.list_access_keys, UserName=username)['AccessKeyMetadata']:
-                retry(iam.delete_access_key, UserName=username, AccessKeyId=key_obj['AccessKeyId'])
-            retry(iam.delete_login_profile, UserName=username)
         except Exception as e:
-            logger.error("IAM access disable failed: %s", e)
+            print(f"Failed to delete EKS cluster or associated resources: {e}")
+
+        # VPCs and Dependencies
+        try:
+            vpcs = ec2.describe_vpcs(Filters=tag_filters)['Vpcs']
+            for vpc in vpcs:
+                vpc_id = vpc['VpcId']
+                print(f"Cleaning up resources for VPC: {vpc_id}")
+
+                # 1. Detach and Delete Internet Gateways
+                igws = ec2.describe_internet_gateways(Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}])['InternetGateways']
+                for igw in igws:
+                    igw_id = igw['InternetGatewayId']
+                    ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+                    ec2.delete_internet_gateway(InternetGatewayId=igw_id)
+                    print(f"Detached and deleted Internet Gateway: {igw_id}")
+
+                # 2. Delete Route Tables (Ensure they are not the main route table before deleting)
+                route_tables = ec2.describe_route_tables(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['RouteTables']
+                for route_table in route_tables:
+                    if not route_table['Associations'][0]['Main']:  # Don't delete the main route table
+                        ec2.delete_route_table(RouteTableId=route_table['RouteTableId'])
+                        print(f"Deleted Route Table: {route_table['RouteTableId']}")
+
+                # 4. Delete NAT Gateways
+                nat_gateways = ec2.describe_nat_gateways(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['NatGateways']
+                for nat in nat_gateways:
+                    ec2.delete_nat_gateway(NatGatewayId=nat['NatGatewayId'])
+                    print(f"Deleted NAT Gateway: {nat['NatGatewayId']}")
+
+                #  Delete Subnets
+                subnets = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])['Subnets']
+                for subnet in subnets:
+                    subnet_id = subnet['SubnetId']
+                    print(f"Deleting subnet: {subnet_id}")
+                    ec2.delete_subnet(SubnetId=subnet_id)
+                    print(f"Deleted subnet: {subnet_id}")
+
+                #  Finally, Delete the VPC
+                ec2.delete_vpc(VpcId=vpc_id)
+                print(f"Deleted VPC: {vpc_id}")
+
+        except Exception as e:
+            print(f"Failed to delete VPC or associated resources: {e}")
+
+        # IAM Cleanup
+        try:
+            for key_obj in iam.list_access_keys(UserName=username)['AccessKeyMetadata']:
+                iam.delete_access_key(UserName=username, AccessKeyId=key_obj['AccessKeyId'])
+            iam.delete_login_profile(UserName=username)
+        except Exception as e:
+            print(f"Access disable failed for {username}: {e}")
 
         try:
-            for grp in retry(iam.list_groups_for_user, UserName=username)['Groups']:
-                retry(iam.remove_user_from_group, GroupName=grp['GroupName'], UserName=username)
-                logger.info("Removed %s from %s", username, grp['GroupName'])
+            groups = iam.list_groups_for_user(UserName=username)['Groups']
+            for group in groups:
+                iam.remove_user_from_group(GroupName=group['GroupName'], UserName=username)
+                print(f"Removed {username} from group: {group['GroupName']}")
         except Exception as e:
-            logger.error("IAM group removal failed: %s", e)
+            print(f"Group removal failed for {username}: {e}")
 
         try:
-            retry(iam.delete_user, UserName=username)
-            logger.info("Deleted IAM user %s", username)
+            iam.delete_user(UserName=username)
+            print(f"Deleted IAM user: {username}")
         except Exception as e:
-            logger.error("IAM user deletion failed: %s", e)
+            print(f"User delete failed for {username}: {e}")
 
-        # Delete session record
         try:
-            retry(s3.delete_object, Bucket=BUCKET, Key=key)
-            logger.info("Deleted session file %s", key)
+            s3.delete_object(Bucket=BUCKET_NAME, Key=key)
+            print(f"Deleted session file: {key}")
         except Exception as e:
-            logger.error("Session record deletion failed: %s", e)
+            print(f"Failed to delete session file: {key}, Error: {e}")
