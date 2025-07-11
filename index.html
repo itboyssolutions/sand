@@ -72,7 +72,7 @@
         output.innerHTML = `
           <strong>👤 Username:</strong> ${parsed.username}<br>
           <strong>🔐 Console Password:</strong> ${parsed.console_password}<br>
-          <span style="white-space: nowrap;">🌐 <strong>Console Login:</strong> <a href="https://agile-techpractices.signin.aws.amazon.com/console?region=eu-west-1">https://agile-techpractices.signin.aws.amazon.com/console?region=eu-west-1</a></span><br>
+          <strong>🌐 Console Login:</strong> <a href="${parsed.console_login}" target="_blank">${parsed.console_login}</a><br>
           <strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}<br>
           <strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}<br>
           <strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes<br>
