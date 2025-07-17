@@ -25,6 +25,7 @@
       padding: 12px 24px;
       font-size: 16px;
       border: none;
+      align-items: center;
       border-radius: 8px;
       cursor: pointer;
       transition: background-color 0.3s ease;
@@ -51,22 +52,49 @@
       color: #5e2ca5;
       text-decoration: underline;
     }
+
+    #main {
+      display: none;
+    }
   </style>
+
+  <script>
+    const clientId = "4gm7a617ve3ridv7f0vg20shom";
+    const redirectUri = "https://d3s0clh92ovukp.cloudfront.net";
+    const cognitoDomain = "eu-west-1msowvp5lz.auth.eu-west-1.amazoncognito.com";
+
+    const hash = window.location.hash.substr(1);
+    const result = hash.split('&').reduce((res, item) => {
+      const parts = item.split('=');
+      res[parts[0]] = decodeURIComponent(parts[1]);
+      return res;
+    }, {});
+
+    if (!result.id_token) {
+      const loginUrl = `https://${cognitoDomain}/login?client_id=${clientId}&response_type=token&scope=openid+email&redirect_uri=${redirectUri}`;
+      window.location.href = loginUrl;
+    } else {
+      sessionStorage.setItem("id_token", result.id_token);
+      document.addEventListener("DOMContentLoaded", () => {
+        document.getElementById("main").style.display = "block";
+      });
+    }
+  </script>
 </head>
+
 <body>
-  <h1>Create AWS Sandbox User</h1>
-  <button onclick="createSandbox()">🚀 Launch Sandbox</button>
-
-  <div id="output" class="output">
-    Click the button above to create a temporary AWS sandbox user for Kubernetes.
-  </div>
-
+  <div id="main">
+    <h1>Create AWS Sandbox User</h1>
+    <button onclick="createSandbox()">🚀 Launch Sandbox</button>
+    <div id="output" class="output">
+      Click the button above to create a temporary AWS sandbox user for Kubernetes.
+    </div>
   <script>
     async function createSandbox() {
       const output = document.getElementById("output");
       output.textContent = "⏳ Creating sandbox user...";
       try {
-        const response = await fetch("https://uytxrxjznj.execute-api.eu-west-1.amazonaws.com/sandbox"); // Replace this with your actual URL
+        const response = await fetch("https://uytxrxjznj.execute-api.eu-west-1.amazonaws.com/sandbox");
         const parsed = await response.json();
 
         output.innerHTML = `
