@@ -9,7 +9,7 @@ SANDBOX_NAME = "Kubernetes"
 VALIDITY_MINUTES = 10
 ACCESS_GROUPS = ["EKS_Group1", "EKS_Group2"]
 STATIC_PASSWORD = "Lo6+sd26G6yY@"
-CONSOLE_URL = "https://agile-techpractices.signin.aws.amazon.com/console"
+CONSOLE_URL = "https://agile-techpractices.signin.aws.amazon.com/console?region=eu-west-1"
 
 # AWS Clients
 sts = boto3.client('sts')
