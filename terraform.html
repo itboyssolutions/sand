@@ -52,14 +52,26 @@
 
     .output {
       margin-top: 30px;
+      text-align: left;
       background-color: white;
       border-radius: 10px;
-      padding: 20px;
+      padding: 16px;
       width: 100%;
       box-shadow: 0 4px 10px rgba(0,0,0,0.1);
       white-space: pre-wrap;
       font-family: monospace;
       word-break: break-word;
+    }
+
+    .output-line {
+      margin-bottom: 4px;
+      line-height: 1.3;
+    }
+
+    .output-line strong {
+      margin: 0;
+      padding: 0;
+      display: inline;
     }
 
     a {
@@ -87,16 +99,16 @@
         const parsed = await response.json();
 
         output.innerHTML = `
-          <strong>👤 Username:</strong> ${parsed.username}<br>
-          <strong>🔐 Console Password:</strong> ${parsed.console_password}<br>
-          <strong>🌐 Console Login:</strong> <a href="${parsed.console_login}" target="_blank">${parsed.console_login}</a><br>
-          <strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}<br>
-          <strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}<br>
-          <strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes<br>
-          <strong style="background:#f3e8ff; border:1px solid #9c27b0; padding:6px 10px; border-radius:6px; color:#4a148c; font-family:monospace;">🏷️ Note: Add below Tag to all resources you create.</strong> 
-          <span style="color:#000000; font-weight:bold; font-family:'Courier New', monospace;">
-            ${parsed.tag_instruction || `Key=Username,Value=${parsed.username}`}
-          </span>
+          <div class="output-line"><strong>👤 Username:</strong> ${parsed.username}</div>
+          <div class="output-line"><strong>🔐 Console Password:</strong> ${parsed.console_password}</div>
+          <div class="output-line"><strong>🌐 Console Login:</strong> <a href="${parsed.console_login}" target="_blank">${parsed.console_login}</a></div>
+          <div class="output-line"><strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}</div>
+          <div class="output-line"><strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}</div>
+          <div class="output-line"><strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes</div>
+          <div style="margin-top:16px; background:#f3e8ff; border:1px solid #9c27b0; padding:10px; border-radius:6px; color:#4a148c;">
+            <strong>🏷️ Note:</strong> Add the below tag to all resources you create.
+          </div>
+          <pre style="font-family:'Courier New', monospace; font-weight:bold;">Key=Username,Value=${parsed.username}</pre>
         `;
       } catch (err) {
         output.textContent = "❌ Failed to create sandbox user: " + err;
