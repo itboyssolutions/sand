@@ -13,10 +13,9 @@
     }
 
     .left {
-      width: 30%;
+      width: 35%;
       padding: 40px;
       background-color: #f4f0fb;
-      text-align: center;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -24,7 +23,7 @@
     }
 
     .right {
-      width: 70%;
+      width: 65%;
       padding: 40px;
       background-color: #ffffff;
       overflow-y: auto;
@@ -52,33 +51,42 @@
 
     .output {
       margin-top: 30px;
-      text-align: left;
       background-color: white;
       border-radius: 10px;
-      padding: 16px;
+      padding: 20px;
       width: 100%;
       box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-      white-space: pre-wrap;
       font-family: monospace;
       word-break: break-word;
+      text-align: left;
     }
 
     .output-line {
-      margin-bottom: 4px;
-      line-height: 1.3;
+      margin: 3px 0;
+      line-height: 1.4;
     }
 
-    .output-line strong {
-      margin: 0;
-      padding: 0;
-      display: inline;
+    .note {
+      font-weight: bold;
+      margin-top: 10px;
+    }
+
+    pre {
+      font-family: 'Courier New', monospace;
+      font-weight: bold;
+      margin-top: 2px;
     }
 
     a {
       color: #5e2ca5;
       text-decoration: underline;
     }
+
+    strong {
+      font-weight: bold;
+    }
   </style>
+
   <script>
     async function createSandbox(sandboxName, accessGroups) {
       const output = document.getElementById("output");
@@ -99,16 +107,14 @@
         const parsed = await response.json();
 
         output.innerHTML = `
-          <div class="output-line"><strong>👤 Username:</strong> ${parsed.username}</div>
-          <div class="output-line"><strong>🔐 Console Password:</strong> ${parsed.console_password}</div>
-          <div class="output-line"><strong>🌐 Console Login:</strong> <a href="${parsed.console_login}" target="_blank">${parsed.console_login}</a></div>
-          <div class="output-line"><strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}</div>
-          <div class="output-line"><strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}</div>
-          <div class="output-line"><strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes</div>
-          <div style="margin-top:16px; background:#f3e8ff; border:1px solid #9c27b0; padding:10px; border-radius:6px; color:#4a148c;">
-            <strong>🏷️ Note:</strong> Add the below tag to all resources you create.
-          </div>
-          <pre style="font-family:'Courier New', monospace; font-weight:bold;">Key=Username,Value=${parsed.username}</pre>
+          <div class="output-line"><span><strong>👤 Username:</strong> ${parsed.username}</span></div>
+          <div class="output-line"><span><strong>🔐 Console Password:</strong> ${parsed.console_password}</span></div>
+          <div class="output-line"><span><strong>🌐 Console Login:</strong> <a href="${parsed.console_login}" target="_blank">${parsed.console_login}</a></span></div>
+          <div class="output-line"><span><strong>🧩 Access Key ID:</strong> ${parsed.access_key_id}</span></div>
+          <div class="output-line"><span><strong>🔑 Secret Access Key:</strong> ${parsed.secret_access_key}</span></div>
+          <div class="output-line"><span><strong>⏳ Expires In:</strong> ${parsed.validity_minutes} minutes</span></div>
+          <div class="note">🏷️ Note: Add the below tag to all resources you create.</div>
+          <pre>Key=Username,Value=${parsed.username}</pre>
         `;
       } catch (err) {
         output.textContent = "❌ Failed to create sandbox user: " + err;
@@ -116,14 +122,16 @@
     }
   </script>
 </head>
+
 <body>
   <div class="left">
-    <h1>Create AWS Sandbox User</h1>
+    <h3>Create AWS Sandbox User</h3>
     <button onclick="createSandbox('Terraform', ['Terraform', 'Sandbox'])">🚀 Launch Sandbox</button>
     <div id="output" class="output">
       Click the button above to create a temporary AWS sandbox user for Terraform.
     </div>
   </div>
+
   <div class="right">
     <h2>Terraform Sandbox Guide</h2>
     <p>Welcome to your Terraform sandbox session. Use this space for additional help:</p>
