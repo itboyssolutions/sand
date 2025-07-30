@@ -1,0 +1,107 @@
+import boto3
+import json
+import datetime
+import os
+
+# === Configuration ===
+REGION = "eu-west-1"
+AMI_ID = "ami-0c6563113e7116042"  # Amazon Linux 2 in eu-west-1
+INSTANCE_TYPE = "t3.medium"
+KEY_NAME = "Ansireland"  # Actual EC2 key name (not .ppk)
+PORT = 3333
+ACCESS_KEY_URL = "https://dummy-s3-url/access-key.pem"
+
+# === Fixed VPC setup ===
+SUBNET_ID = "subnet-069ae0d7de0cb3e28"
+SG_ID = "sg-05c3e819e6275a80b"
+SANDBOX_NAME = "ec2-sandbox"
+
+ec2 = boto3.client('ec2', region_name=REGION)
+
+def lambda_handler(event, context):
+    print("🚀 Lambda triggered")
+    print("📩 Event:", json.dumps(event, indent=2))
+
+    try:
+        body = json.loads(event.get("body", "{}"))
+        wlip = body["WLIP"]
+    except Exception as e:
+        return {"statusCode": 400, "body": json.dumps({"error": "Missing or invalid WLIP"})}
+
+    cidr_ip = f"{wlip}/32"
+
+    # === Check existing SG rules to prevent duplicates ===
+    try:
+        sg_desc = ec2.describe_security_groups(GroupIds=[SG_ID])
+        permissions = sg_desc['SecurityGroups'][0]['IpPermissions']
+        already_allowed = False
+
+        for perm in permissions:
+            if (perm.get('FromPort') == PORT and perm.get('ToPort') == PORT and perm.get('IpProtocol') == 'tcp'):
+                for ip_range in perm.get('IpRanges', []):
+                    if ip_range.get('CidrIp') == cidr_ip:
+                        already_allowed = True
+                        break
+
+        if already_allowed:
+            print(f"⚠️ {cidr_ip} already allowed on port {PORT}")
+        else:
+            ec2.authorize_security_group_ingress(
+                GroupId=SG_ID,
+                IpPermissions=[
+                    {
+                        'IpProtocol': 'tcp',
+                        'FromPort': PORT,
+                        'ToPort': PORT,
+                        'IpRanges': [{'CidrIp': cidr_ip}]
+                    }
+                ]
+            )
+            print(f"✅ Inbound rule added to SG {SG_ID} for {cidr_ip}")
+    except Exception as e:
+        print(f"❌ Error checking or adding SG rule: {e}")
+
+    # === Launch EC2 ===
+    try:
+        instance = ec2.run_instances(
+            ImageId=AMI_ID,
+            InstanceType=INSTANCE_TYPE,
+            KeyName=KEY_NAME,
+            SubnetId=SUBNET_ID,
+            SecurityGroupIds=[SG_ID],
+            MinCount=1,
+            MaxCount=1,
+            TagSpecifications=[
+                {
+                    'ResourceType': 'instance',
+                    'Tags': [{'Key': 'Name', 'Value': SANDBOX_NAME}]
+                }
+            ]
+        )['Instances'][0]
+
+        instance_id = instance['InstanceId']
+        print(f"🚀 Instance launched: {instance_id}")
+
+        ec2_resource = boto3.resource('ec2', region_name=REGION)
+        ec2_instance = ec2_resource.Instance(instance_id)
+        ec2_instance.wait_until_running()
+        ec2_instance.reload()
+        public_ip = ec2_instance.public_ip_address
+        print(f"🌐 Public IP assigned: {public_ip}")
+    except Exception as e:
+        return {"statusCode": 500, "body": json.dumps({"error": f"EC2 launch failed: {str(e)}"})}
+
+    return {
+        "statusCode": 200,
+        "headers": {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "*"
+        },
+        "body": json.dumps({
+            "instance_id": instance_id,
+            "public_ip": public_ip,
+            "username": "ec2-user",
+            "port": PORT,
+            "access_key_url": ACCESS_KEY_URL
+        })
+    }
